@@ -2,7 +2,7 @@
 //! Not part of the 1.12 client; it lives on the `mm-link` branch and does nothing unless
 //! `BENILLA_MM_LINK=1`.
 //!
-//! The packet contract is `mm-bridge/LINKSTATE.md` (v0: 48 bytes, little-endian, UDP on
+//! The packet contract is `mm-bridge/LINKSTATE.md` (append-only; this reads the v0 prefix, UDP on
 //! 127.0.0.1). This first crossover reacts to one verified field: when Link's health drops
 //! during gameplay, the player jumps through the same one-shot a Space press fires, so the
 //! server sees an ordinary jump. The rule itself is in [`detector`].
@@ -27,12 +27,16 @@ use detector::{decode, DropDetector};
 const DEFAULT_PORT: u16 = 47648;
 /// Datagrams drained per frame at most; at ~20 a second there are rarely more than one or two.
 const MAX_PER_FRAME: usize = 256;
+/// Receive buffer. LinkState only grows (append-only), and on Windows a datagram larger than
+/// the buffer fails the read outright, so leave ample room: any UDP payload fits.
+const RECV_BUFFER: usize = 65536;
 
 /// The socket and the detector, present only when the link is enabled and its port bound.
 #[derive(Resource)]
 struct MmLink {
     socket: UdpSocket,
     detector: DropDetector,
+    buf: Vec<u8>,
 }
 
 pub(crate) struct MmLinkPlugin;
@@ -57,10 +61,11 @@ impl Plugin for MmLinkPlugin {
             warn!("MM link: can't make the socket non-blocking ({e}); the link is off");
             return;
         }
-        info!("MM link: listening on 127.0.0.1:{port} for LinkState v0 (no data yet)");
+        info!("MM link: listening on 127.0.0.1:{port} for LinkState (no data yet)");
         app.insert_resource(MmLink {
             socket,
             detector: DropDetector::default(),
+            buf: vec![0; RECV_BUFFER],
         })
         .add_systems(
             Update,
@@ -82,14 +87,13 @@ fn receive(
     let in_world = state.is_some_and(|s| *s.get() == ClientState::InWorld);
     let link = &mut *link;
     let mut jump = false;
-    let mut buf = [0u8; 64];
     for _ in 0..MAX_PER_FRAME {
         // WouldBlock is the normal "nothing waiting"; any other error (such as Windows'
         // connection-reset report for UDP) ends this frame's drain the same way.
-        let Ok(n) = link.socket.recv(&mut buf) else {
+        let Ok(n) = link.socket.recv(&mut link.buf) else {
             break;
         };
-        let Some(packet) = decode(&buf[..n]) else {
+        let Some(packet) = decode(&link.buf[..n]) else {
             continue;
         };
         if !link.detector.receiving() {

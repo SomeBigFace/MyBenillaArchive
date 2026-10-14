@@ -9,7 +9,10 @@ pub(crate) const STALE_AFTER: Duration = Duration::from_secs(1);
 /// At most one jump per this long, so continuous damage doesn't make a pogo stick.
 pub(crate) const JUMP_COOLDOWN: Duration = Duration::from_secs(1);
 
-const PACKET_SIZE: usize = 48;
+/// The v0 prefix this module reads. LinkState is append-only (LINKSTATE.md): every version
+/// (all are >= 0, the version implemented here) with at least this many bytes carries these
+/// fields at these offsets.
+const KNOWN_SIZE: usize = 48;
 const FLAG_GAMEPLAY_ACTIVE: u32 = 0x2;
 
 /// The v0 fields the link reads.
@@ -21,14 +24,16 @@ pub(crate) struct LinkState {
     pub file_num: i32,
 }
 
-/// Decode a LinkState v0 datagram; `None` for anything that isn't exactly one.
+/// Decode the v0 prefix of a LinkState datagram of any version >= 0; `None` for anything else.
+/// The size field must match the datagram's length and be at least the known prefix.
 pub(crate) fn decode(bytes: &[u8]) -> Option<LinkState> {
-    if bytes.len() != PACKET_SIZE || &bytes[0..4] != b"MMLS" {
+    if bytes.len() < KNOWN_SIZE || &bytes[0..4] != b"MMLS" {
         return None;
     }
     let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
-    if u16_at(4) != 0 || u16_at(6) as usize != PACKET_SIZE {
+    // The version (offset 4) needs no check: any is >= 0, and later ones only append.
+    if u16_at(6) as usize != bytes.len() {
         return None;
     }
     Some(LinkState {
@@ -132,20 +137,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_magic_version_or_size() {
+    fn rejects_wrong_magic_or_size() {
         let good = packet(1, true, 48, 48, 0);
         let mut magic = good.clone();
         magic[0] = b'X';
-        let mut version = good.clone();
-        version[4] = 1;
         let mut size = good.clone();
         size[6] = 40;
         assert!(decode(&good).is_some());
         assert!(decode(&magic).is_none());
-        assert!(decode(&version).is_none());
-        assert!(decode(&size).is_none());
-        assert!(decode(&good[..47]).is_none());
-        assert!(decode(&[good.clone(), vec![0]].concat()).is_none());
+        assert!(decode(&size).is_none(), "size field must match the datagram");
+        assert!(decode(&good[..47]).is_none(), "shorter than the known prefix");
+        assert!(decode(&[good.clone(), vec![0]].concat()).is_none(), "size field says 48");
+    }
+
+    /// Append-only versioning: a later, longer packet decodes from its v0 prefix.
+    #[test]
+    fn accepts_newer_versions_by_their_v0_prefix() {
+        let mut v1 = packet(42, true, 312, 320, 0);
+        v1[4..6].copy_from_slice(&1u16.to_le_bytes());
+        v1[6..8].copy_from_slice(&128u16.to_le_bytes());
+        v1.resize(128, 0xEE); // whatever v1 appends is ignored
+        assert_eq!(
+            decode(&v1),
+            Some(LinkState { sequence: 42, gameplay_active: true, health: 312, file_num: 0 })
+        );
+        let mut v7 = v1.clone();
+        v7[4..6].copy_from_slice(&7u16.to_le_bytes());
+        assert!(decode(&v7).is_some());
     }
 
     #[test]
