@@ -165,6 +165,13 @@ impl BindingsState {
             .map(|&(_, v)| v)
             .sum()
     }
+    /// Not 1.12: fire a one-shot from outside the key path, as a binding's Lua call would. The
+    /// Majora's Mask link ([`crate::mm_link`]) jumps through this, after dispatch has run.
+    pub(crate) fn fire_external(&mut self, i: Input) {
+        self.fired.push(i);
+        self.just.push(i);
+        self.amounts.push((i, 1.0));
+    }
     /// Both mouse bits held by their Lua Starts, the both-button run: MOVEANDSTEER's body
     /// (`Bindings.xml:3-11`) runs `CameraOrSelectOrMoveStart` and `TurnOrActionStart`.
     pub(crate) fn steering(&self) -> bool {

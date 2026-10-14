@@ -165,6 +165,8 @@ impl PluginGroup for GamePlugins {
             .add(crate::cvars::CvarPlugin)
             .add(crate::console::ConsolePlugin)
             .add(crate::bindings::BindingsPlugin)
+            // Not 1.12: inert unless `BENILLA_MM_LINK=1`.
+            .add(crate::mm_link::MmLinkPlugin)
             .add(UiUnitPlugin)
             .add(UiPartyPlugin)
             .add(UiDuelPlugin)

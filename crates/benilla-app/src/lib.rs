@@ -67,6 +67,8 @@ mod loading_screen;
 mod local_state;
 mod login;
 mod minimap;
+// Not 1.12: the opt-in Majora's Mask link (`BENILLA_MM_LINK=1`), on the `mm-link` branch.
+mod mm_link;
 mod nameplates;
 mod names;
 mod net;
