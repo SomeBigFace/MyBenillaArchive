@@ -7,10 +7,15 @@
 //! during gameplay, the player jumps through the same one-shot a Space press fires, so the
 //! server sees an ordinary jump. The rule itself is in [`detector`].
 //!
+//! It also sends GroundState (`mm-bridge/GROUNDSTATE.md`): the ground under our character, for
+//! the lab floor in Majora's Mask to tilt to (see [`ground`]).
+//!
 //! Benilla never depends on the emulator: no handshake, no blocking. Without packets it logs
 //! "MM link: no data" and carries on; when they resume it starts fresh.
 
 mod detector;
+mod ground;
+mod ground_packet;
 
 use std::net::UdpSocket;
 use std::time::Instant;
@@ -62,6 +67,14 @@ impl Plugin for MmLinkPlugin {
             return;
         }
         info!("MM link: listening on 127.0.0.1:{port} for LinkState (no data yet)");
+        if let Some(sender) = ground::GroundSender::open() {
+            app.insert_resource(sender).add_systems(
+                Update,
+                ground::send_ground
+                    .run_if(resource_exists::<ground::GroundSender>)
+                    .after(WorldStage::Input),
+            );
+        }
         app.insert_resource(MmLink {
             socket,
             detector: DropDetector::default(),
