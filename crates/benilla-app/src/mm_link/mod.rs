@@ -10,12 +10,18 @@
 //! It also sends GroundState (`mm-bridge/GROUNDSTATE.md`): the ground under our character, for
 //! the lab floor in Majora's Mask to tilt to (see [`ground`]).
 //!
+//! With `BENILLA_MM_MOVE=1` too, Link running on the MM treadmill drives this character (see
+//! [`movement`]).
+//!
 //! Benilla never depends on the emulator: no handshake, no blocking. Without packets it logs
 //! "MM link: no data" and carries on; when they resume it starts fresh.
 
 mod detector;
 mod ground;
 mod ground_packet;
+mod movement;
+
+pub(crate) use movement::MmMove;
 
 use std::net::UdpSocket;
 use std::time::Instant;
@@ -67,6 +73,12 @@ impl Plugin for MmLinkPlugin {
             return;
         }
         info!("MM link: listening on 127.0.0.1:{port} for LinkState (no data yet)");
+        if std::env::var("BENILLA_MM_MOVE").as_deref() == Ok("1") {
+            info!("MM link: Majora's Mask movement drives the character while Link is on the treadmill");
+            app.init_resource::<MmMove>()
+                .init_resource::<BlockWatch>()
+                .add_systems(Update, watch_blocked.after(WorldStage::Input));
+        }
         if let Some(sender) = ground::GroundSender::open() {
             app.insert_resource(sender).add_systems(
                 Update,
@@ -95,7 +107,10 @@ fn receive(
     mut link: ResMut<MmLink>,
     mut binds: ResMut<BindingsState>,
     state: Option<Res<State<ClientState>>>,
+    mut mm_move: Option<ResMut<MmMove>>,
+    time: Res<Time>,
 ) {
+    let t = time.elapsed_secs();
     let now = Instant::now();
     let in_world = state.is_some_and(|s| *s.get() == ClientState::InWorld);
     let link = &mut *link;
@@ -106,6 +121,9 @@ fn receive(
         let Ok(n) = link.socket.recv(&mut link.buf) else {
             break;
         };
+        if let (Some(m), Some(s)) = (mm_move.as_deref_mut(), movement::decode_movement(&link.buf[..n])) {
+            m.on_sample(s, t);
+        }
         let Some(packet) = decode(&link.buf[..n]) else {
             continue;
         };
@@ -126,5 +144,70 @@ fn receive(
     }
     if jump && in_world {
         binds.fire_external(Input::Jump);
+    }
+    if let Some(m) = mm_move.as_deref_mut() {
+        let d = if in_world { m.evaluate(t) } else { None };
+        if d.is_some() != m.driving {
+            m.driving = d.is_some();
+            if m.driving {
+                info!("MM link: movement: Link drives the character");
+            } else {
+                info!("MM link: movement: keys drive the character ({})", m.idle_reason);
+            }
+        }
+        m.set_current(d);
+    }
+}
+
+/// The blocked-by-WoW watch: over each second while Link drives, the distance Link asked for
+/// against the distance the character actually covered.
+#[derive(Resource, Default)]
+struct BlockWatch {
+    asked: f32,
+    covered: f32,
+    window: f32,
+    last_pos: Option<Vec3>,
+    blocked: bool,
+}
+
+/// Log, don't fix: a WoW wall or a too-steep slope stops the character while Link keeps running
+/// (expected, `mm-bridge/DESIGN.md`). Logged once each time it starts and stops.
+fn watch_blocked(
+    mm_move: Res<MmMove>,
+    player: Res<crate::player::Player>,
+    time: Res<Time>,
+    mut watch: ResMut<BlockWatch>,
+) {
+    let pos = player.pos;
+    let moved = watch
+        .last_pos
+        .map_or(0.0, |p| Vec2::new(pos.x - p.x, pos.z - p.z).length());
+    watch.last_pos = Some(pos);
+    let Some(d) = mm_move.drive().filter(|d| d.moving) else {
+        watch.asked = 0.0;
+        watch.covered = 0.0;
+        watch.window = 0.0;
+        return;
+    };
+    let dt = time.delta_secs();
+    watch.asked += d.speed * dt;
+    watch.covered += moved;
+    watch.window += dt;
+    if watch.window >= 1.0 {
+        let blocked = watch.asked > 1.0 && watch.covered < 0.2 * watch.asked;
+        if blocked != watch.blocked {
+            watch.blocked = blocked;
+            if blocked {
+                info!(
+                    "MM link: movement: Link runs ({:.1} yd/s) but the character is blocked in WoW (wall or steep slope)",
+                    d.speed
+                );
+            } else {
+                info!("MM link: movement: the character is moving again");
+            }
+        }
+        watch.asked = 0.0;
+        watch.covered = 0.0;
+        watch.window = 0.0;
     }
 }

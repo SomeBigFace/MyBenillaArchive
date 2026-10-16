@@ -64,6 +64,8 @@ pub(super) fn control(
         Res<scoped_view::ScopedView>,
         // The loading cover blanks input at the source; a gesture in flight is unwound below.
         Res<crate::loading_screen::LoadingScreen>,
+        // Not 1.12: the Majora's Mask link's movement drive, present only with BENILLA_MM_MOVE=1.
+        Option<Res<crate::mm_link::MmMove>>,
     ),
     mut commands: Commands,
     mut player: ResMut<Player>,
@@ -107,6 +109,8 @@ pub(super) fn control(
     let self_guid = speed_capsule.7 .0;
     let scoped = &speed_capsule.8;
     let covered = speed_capsule.9.covering();
+    // Not 1.12: while Link runs on the MM treadmill, his movement replaces the keys (`mm_link`).
+    let mm_drive = speed_capsule.10.as_deref().and_then(|m| m.drive());
     // Far sight turns the auto-follow off: our facing is not "behind" for a body we only watch.
     let follow_cfg = camera::FollowConfig {
         style: if view_subject.remote.is_some() {
@@ -361,7 +365,7 @@ pub(super) fn control(
         }
         // `0x514560`, after `apply_server_moves`, so this frame's root edge is already in `modes`.
         let may_translate = mover.may_translate(player.modes.rooted);
-        let axes = input::move_axes(
+        let mut axes = input::move_axes(
             binds,
             &buttons,
             &mut player,
@@ -370,6 +374,19 @@ pub(super) fn control(
             may_translate,
             may_turn,
         );
+        // Not 1.12: the MM drive replaces the keys' axes and the facing (forward or stand; no
+        // strafe or turn keys). The flags, the mover and the stream below follow as usual.
+        if let Some(d) = mm_drive {
+            axes.fwd = i32::from(d.moving);
+            axes.side = 0;
+            axes.strafe_left = false;
+            axes.strafe_right = false;
+            axes.turning = false;
+            axes.turn_left = false;
+            axes.turn_right = false;
+            axes.translating = d.moving && may_translate;
+            player.face_yaw = d.face_yaw;
+        }
         let input::MoveAxes {
             fwd: fwd_axis,
             side: side_axis,
@@ -490,6 +507,8 @@ pub(super) fn control(
                 0
             },
         );
+        // Not 1.12: under the MM drive the character runs at Link's own speed, not the server's.
+        let speed = mm_drive.filter(|d| d.moving).map_or(speed, |d| d.speed);
         // `Jump` (`0x513bd0`) inlines `0x5144e0` and `0x514560`, which is `may_translate` term for
         // term: health, root and stand state 7. Hover's refusal is the movement handler's
         // (`0x7c623a`), which keeps the mounted flourish reachable while hovering.
